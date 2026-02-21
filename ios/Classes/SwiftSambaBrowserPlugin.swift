@@ -10,68 +10,79 @@ public class SwiftSambaBrowserPlugin: NSObject, FlutterPlugin {
     }
     
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-        let args = call.arguments as! [String:Any]
+        guard let args = call.arguments as? [String: Any] else {
+            result(FlutterError(code: "invalid_arguments", message: "Arguments are missing or invalid", details: nil))
+            return
+        }
         
         switch call.method {
         case "getShareList":
             getShareList(args: args, flutterResult: result)
-            break
-            
         case "saveFile":
             saveFile(args: args, flutterResult: result)
-            break
-            
         default:
             result(FlutterMethodNotImplemented)
         }
     }
     
-    private func getShareList(args: [String:Any], flutterResult: @escaping FlutterResult) {
-        
-        // extract the first part of the URL to connect to the root-subfolder
-        let url: String = "smb://" + Array((args["url"] as! String).split(separator: "/"))[1..<3].joined(separator: "/")
-
-        // the last component of the url has to be extracted separately as the share string must not be empty
-        let share: String = String(url.split(separator: "/").last!)
-        let path: String = (args["url"] as! String).components(separatedBy: "/").dropFirst(4).joined(separator: "/")
-        
-        
-        let user: String = args["username"] as! String
-        let password: String = args["password"] as! String
-        
-        SMBClient(url: url, share: share, user: user, password: password).listDirectory(path: path, handler: { result in
-            switch result {
-            case .success(let shares):
-                flutterResult(shares)
-            case .failure(let error):
-                flutterResult(FlutterError(code: "An error occurred", message: error.localizedDescription, details: nil))
-            }
-        })
+    private func buildClient(from urlString: String, user: String, password: String) -> (client: SMBClient, share: String) {
+        let parts = urlString.split(separator: "/")
+        let baseURL = "smb://" + Array(parts)[1..<3].joined(separator: "/")
+        let share = String(baseURL.split(separator: "/").last!)
+        return (SMBClient(url: baseURL, share: share, user: user, password: password), share)
     }
     
-    private func saveFile(args: [String:Any], flutterResult: @escaping FlutterResult) {
+    private func getShareList(args: [String: Any], flutterResult: @escaping FlutterResult) {
+        guard
+            let urlString = args["url"] as? String,
+            let user = args["username"] as? String,
+            let password = args["password"] as? String
+        else {
+            flutterResult(FlutterError(code: "invalid_arguments", message: "Missing required arguments", details: nil))
+            return
+        }
         
-        // extract the first part of the URL to connect to the root-subfolder
-        let url: String = "smb://" + Array((args["url"] as! String).split(separator: "/"))[1..<3].joined(separator: "/")
+        let parts = urlString.split(separator: "/")
+        let baseURL = "smb://" + Array(parts)[1..<3].joined(separator: "/")
+        let share = String(baseURL.split(separator: "/").last!)
+        let path = urlString.components(separatedBy: "/").dropFirst(4).joined(separator: "/")
         
-        let share: String = String(url.split(separator: "/").last!)
-        let atPath: String = String((args["url"] as! String).replacingOccurrences(of: url, with: "").dropFirst())
-
-        let saveFolder: String = args["saveFolder"] as! String
-        let fileName: String = args["fileName"] as! String
-        let user: String = args["username"] as! String
-        let password: String = args["password"] as! String
-        
-        SMBClient(url: url, share: share, user: user, password: password).downloadFile(atPath: atPath, to: saveFolder + fileName, handler: { result in
-            switch result {
-            case .success(let shares):
-                print("File downloaded successfully")
-                flutterResult(shares)
-            case .failure(let error):
-                print(error)
-                flutterResult(FlutterError(code: "An error occurred", message: error.localizedDescription, details: nil))
+        Task {
+            do {
+                let files = try await SMBClient(url: baseURL, share: share, user: user, password: password)
+                    .listDirectory(path: path)
+                flutterResult(files)
+            } catch {
+                flutterResult(FlutterError(code: "error", message: error.localizedDescription, details: nil))
             }
-        })
+        }
     }
     
+    private func saveFile(args: [String: Any], flutterResult: @escaping FlutterResult) {
+        guard
+            let urlString = args["url"] as? String,
+            let saveFolder = args["saveFolder"] as? String,
+            let fileName = args["fileName"] as? String,
+            let user = args["username"] as? String,
+            let password = args["password"] as? String
+        else {
+            flutterResult(FlutterError(code: "invalid_arguments", message: "Missing required arguments", details: nil))
+            return
+        }
+        
+        let parts = urlString.split(separator: "/")
+        let baseURL = "smb://" + Array(parts)[1..<3].joined(separator: "/")
+        let share = String(baseURL.split(separator: "/").last!)
+        let atPath = String(urlString.replacingOccurrences(of: baseURL, with: "").dropFirst())
+        
+        Task {
+            do {
+                let path = try await SMBClient(url: baseURL, share: share, user: user, password: password)
+                    .downloadFile(atPath: atPath, to: saveFolder + fileName)
+                flutterResult(path)
+            } catch {
+                flutterResult(FlutterError(code: "error", message: error.localizedDescription, details: nil))
+            }
+        }
+    }
 }
